@@ -2,7 +2,7 @@ import os
 import re
 import pandas as pd
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from utils import setup_logging  # Absolute import
 
 class XMLGenerator:
@@ -245,40 +245,68 @@ class XMLGenerator:
             self.logger.error(f"Error creating article XML: {e}")
             raise
 
+
+    def _crossref_timestamp(self) -> str:
+        """Return a 17-digit, UTC, millisecond-precision timestamp string.
+        Guarantees monotonicity vs the last used value persisted in the folder."""
+        now = datetime.now(timezone.utc)
+        ts = now.strftime('%Y%m%d%H%M%S') + f"{now.microsecond // 1000:03d}"  # 17 digits
+        stamp_file = os.path.join(self.folder_path, '.last_crossref_ts')
+
+        try:
+            if os.path.exists(stamp_file):
+                with open(stamp_file, 'r', encoding='utf-8') as f:
+                    last = f.read().strip()
+                if last and ts <= last:
+                    # bump by 1 to stay strictly greater
+                    ts = str(int(last) + 1).zfill(len(last))
+        except Exception:
+            # don’t block generation on cache read issues
+            pass
+
+        try:
+            with open(stamp_file, 'w', encoding='utf-8') as f:
+                f.write(ts)
+        except Exception:
+            pass
+
+        return ts
+
+
     def combine_xml(self):
-        """Wrap everything into <doi_batch> with <journal> body"""
         self.logger.info("Combining journal and article XML into a single XML document...")
         try:
             batch_id = self._safe(self.journal_data.iloc[0].get('Journal_DOI')) or self.base_filename
-            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+            timestamp = self._crossref_timestamp()  # <-- use the new helper
 
             combined_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<doi_batch xmlns="http://www.crossref.org/schema/4.4.2"
-           version="4.4.2"
-           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-           xsi:schemaLocation="http://www.crossref.org/schema/4.4.2 http://www.crossref.org/schemas/crossref4.4.2.xsd">
-    <head>
-        <doi_batch_id>{batch_id}</doi_batch_id>
-        <timestamp>{timestamp}</timestamp>
-        <depositor>
-            <depositor_name>MSSL</depositor_name>
-            <email_address>memanuel@olemiss.edu</email_address>
-        </depositor>
-        <registrant>University of Mississippi</registrant>
-    </head>
-    <body>
-        <journal>
-{self.journal_xml}
-{self.article_xml}
-        </journal>
-    </body>
-</doi_batch>
-"""
+    <doi_batch xmlns="http://www.crossref.org/schema/4.4.2"
+            version="4.4.2"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.crossref.org/schema/4.4.2 http://www.crossref.org/schemas/crossref4.4.2.xsd">
+        <head>
+            <doi_batch_id>{batch_id}</doi_batch_id>
+            <timestamp>{timestamp}</timestamp>
+            <depositor>
+                <depositor_name>MSSL</depositor_name>
+                <email_address>memanuel@olemiss.edu</email_address>
+            </depositor>
+            <registrant>University of Mississippi</registrant>
+        </head>
+        <body>
+            <journal>
+    {self.journal_xml}
+    {self.article_xml}
+            </journal>
+        </body>
+    </doi_batch>
+    """
             self.logger.info("XML combined successfully.")
             return combined_xml
         except Exception as e:
             self.logger.error(f"Error combining XML: {e}")
             raise
+
 
     def write_to_xml_file(self, xml_string, filename):
         self.logger.info(f"Writing combined XML to {filename}...")
